@@ -1,411 +1,150 @@
-# SafeChunkEngine
+# 🚀 SafeChunkEngine v1.3.5
 
-**Fault-Tolerant, Sharded JSON Persistence Layer**
+**Fault-Tolerant, Root-Aware, Sharded JSON Persistence Layer**
 
-SafeChunkEngine is a crash-resistant, lock-aware, atomic JSON storage engine designed for applications that need safe local persistence without using a full database.
-
-It stores data in separate JSON “chunks” inside a structured project directory, with automatic backups, atomic writes, and self-healing recovery.
+SafeChunkEngine is a professional-grade, crash-resistant JSON storage engine. It is designed for applications that require "database-like" safety (Atomic writes, WAL, Lock-awareness) using simple local JSON files.
 
 ---
 
-# 📁 Default Project Structure
+# 📁 Storage Architecture
 
-When initialized, SafeChunkEngine automatically creates:
+SafeChunkEngine centralizes all projects under a single **Root Directory** (default: `user_projects`).
 
 ```
-project_id/
-│
-├── .lock
-│
-├── chunks/
-│   ├── users.json
-│   ├── settings.json
-│   └── logs.json
-│
-├── chunks_bak/
-│   ├── users.bak
-│   ├── settings.bak
-│   └── logs.bak
-│
-└── checkpoints/
-    └── checkpoint_manual_YYYYMMDD_HHMMSS.zip
+user_projects/              <-- Root Directory
+└── project_id/             <-- Specific Project Instance
+    ├── .lock               <-- PID Ownership Lock
+    ├── version.json        <-- Migration & Engine Metadata
+    ├── chunks/             <-- Active JSON Shards (.json)
+    ├── chunks_bak/         <-- Redundant Backups (.bak)
+    └── checkpoints/        <-- Snapshot Archives (.zip)
+
 ```
 
 ### Folder Roles
 
-| Folder         | Purpose                            |
-| -------------- | ---------------------------------- |
-| `chunks/`      | Active JSON data files             |
-| `chunks_bak/`  | Backup copies of previous versions |
-| `checkpoints/` | Full project zip archives          |
-| `.lock`        | Process ownership lock             |
-
----
-
-# 🚀 Installation
-
-## Requirements
-
-```bash
-pip install psutil
-```
+| Component | Role | Resilience |
+| --- | --- | --- |
+| `chunks/` | Primary Data Store | Uses `.tmp` swap for atomic writes. |
+| `chunks_bak/` | Disaster Recovery | Automatically mirrored before every write. |
+| `checkpoints/` | Version History | Full ZIP archives with metadata support. |
+| `.lock` | Concurrency Guard | Prevents two processes from corrupting the same project. |
 
 ---
 
 # 🏁 Quick Start
 
+### Installation
+
+```bash
+pip install psutil
+
+```
+
+### Basic Usage
+
 ```python
 from safe_chunk_engine import SafeChunkEngine
 
-engine = SafeChunkEngine("my_project")
+# 1. Initialize Root-Aware Engine
+# Use 'new' to create with auto-incrementing ID if name exists
+engine, status = SafeChunkEngine.new("bridge_design", base_dir="my_data")
 
-# Write data
-engine.stage_update({"name": "Alice"}, "users")
+# 2. Stage Data (In-Memory Buffer)
+# This is "Debounced" - it won't hit the disk for 1.5 seconds (customizable)
+engine.stage_update({"material": "Steel", "safety_factor": 1.5}, "properties")
 
-# Force immediate disk write
+# 3. Force Immediate Sync
 engine.force_sync()
 
-# Read data
-data = engine.fetch_chunk("users")
-print(data)
+# 4. Create a Snaphot
+engine.create_checkpoint(label="pre_optimization", notes="Before changing steel grade")
 
+# 5. Safe Shutdown
 engine.detach()
+
 ```
 
 ---
 
-# 🔐 Engine Lifecycle
+# 🔐 Professional Lifecycle Management
 
-## Initialization
+### Factory Methods
 
-```python
-engine = SafeChunkEngine(
-    project_id="my_project",
-    debounce_delay=1.0,      # seconds before write
-    base_dir=None            # optional storage location
-)
-```
+Starting with v1.3.0, factory methods support `**kwargs` to pass configurations directly to the constructor.
 
-### What Happens Automatically
+* **`SafeChunkEngine.new(project_id, base_dir, **kwargs)`**: Creates a new project. If `bridge` exists, it creates `bridge_1`.
+* **`SafeChunkEngine.open(project_id, base_dir, **kwargs)`**: Opens an existing project. Returns `None` if the project is locked by another process.
+* **`SafeChunkEngine.list_all_projects(base_dir)`**: Returns a list of all project IDs found in the root.
 
-* Creates project folders
-* Checks for existing `.lock`
-* Detects stale PID
-* Claims lock if safe
+### The "Ghost Engine" Guard
+
+Every data method is protected by the `@requires_active` decorator. If you attempt to write to an engine that has been deleted or detached, the operation is blocked safely instead of crashing your app.
 
 ---
 
-## Lock Protection
+# 🛡 Atomic Integrity Mechanism
 
-Only one active process can own a project.
+SafeChunkEngine uses an **Atomic Swap** pattern to ensure data is never corrupted, even during a power failure:
 
-```python
-engine.is_active()
-```
-
-Returns:
-
-* `True` → Safe to use
-* `False` → Another process owns it
-
-If the previous process crashed, the engine auto-detects stale locks.
+1. **Serialize:** Data is written to `shard.tmp`.
+2. **Verify:** `os.fsync()` forces the OS to commit the bits to physical hardware.
+3. **Backup:** The current `shard.json` is copied to `shard.bak`.
+4. **Swap:** `shard.tmp` replaces `shard.json` (an atomic OS operation).
 
 ---
 
-## Clean Shutdown (Important)
+# 📦 Checkpoints & Recovery
 
-Always detach on exit:
-
-```python
-engine.detach()
-```
-
-This:
-
-* Flushes pending writes
-* Cancels timers
-* Removes lock
-* Prevents corruption
-
-Recommended:
-
-```python
-try:
-    run_app()
-finally:
-    engine.detach()
-```
+| Method | Action |
+| --- | --- |
+| `create_checkpoint(label, notes, retention)` | Zips all chunks/backups. Purges archives older than `retention` (default 10). |
+| `restore_checkpoint(zip_name)` | **Destructive.** Wipes current state and restores the ZIP content. Includes integrity check. |
+| `fetch_chunk(name)` | Automatically "Heals" primary data from `.bak` if corruption is detected. |
 
 ---
 
-# ✍️ Writing Data
+# 📊 Diagnostics & Monitoring
 
-## Debounced Write
+### Health Reports
 
-```python
-engine.stage_update(data_dict, "chunk_name")
-```
-
-Example:
-
-```python
-engine.stage_update({"theme": "dark"}, "settings")
-```
-
-### What Happens
-
-1. Data is deep-copied
-2. Stored in memory
-3. Timer starts
-4. Additional updates reset timer
-5. After delay → atomic disk write
-
-Prevents excessive disk operations.
-
----
-
-## Force Immediate Sync
-
-```python
-engine.force_sync()
-```
-
-Use when:
-
-* Closing application
-* Before critical operations
-* Before checkpoint
-
----
-
-# 📖 Reading Data
-
-```python
-data = engine.fetch_chunk("users")
-```
-
-Returns:
-
-* Valid dictionary if exists
-* `{}` if missing
-* Automatically heals from backup if corrupted
-
----
-
-# 🛡 Atomic Write Process
-
-Each write follows:
-
-1. Serialize JSON
-2. Write to `chunks/chunk.tmp`
-3. Flush + `fsync()`
-4. Verify JSON integrity
-5. Copy existing file to `chunks_bak/`
-6. Replace `.json` with `.tmp`
-
-This guarantees:
-
-* No partial writes
-* Crash safety
-* Backup fallback
-
----
-
-# 🔄 Automatic Self-Healing
-
-If a `.json` file becomes corrupted:
-
-1. Engine detects invalid JSON
-2. Attempts to read `.bak`
-3. Restores from backup
-4. Rewrites primary file
-
-No manual recovery required.
-
----
-
-# 📦 Checkpoints (Full Archive Backup)
-
-Create a full project archive:
-
-```python
-engine.create_checkpoint(label="manual")
-```
-
-Creates:
-
-```
-checkpoints/checkpoint_manual_YYYYMMDD_HHMMSS.zip
-```
-
-Includes:
-
-* `chunks/`
-* `chunks_bak/`
-
----
-
-## Retention Control
-
-```python
-engine.create_checkpoint(label="auto", retention=5)
-```
-
-Keeps only the latest 5 archives.
-
----
-
-# 📊 Health Monitoring
-
-```python
-report = engine.get_health_report()
-print(report)
-```
-
-Example output:
+Use `engine.get_health_report()` to monitor the engine status in your GUI:
 
 ```python
 {
-  "engine_active": True,
-  "dirty_buffer": False,
-  "storage_usage": 42.5,
-  "orphaned_artifacts": 0,
-  "shards": 3
+    "active": True,           # Lock status
+    "project": "my_proj", 
+    "root": "C:/data",
+    "shards": 12,             # Count of active JSON files
+    "orphans": 0              # Count of stale .tmp files (should be 0)
 }
+
 ```
 
-### Field Explanation
+### Callbacks
 
-| Field                | Meaning                      |
-| -------------------- | ---------------------------- |
-| `engine_active`      | Lock ownership               |
-| `dirty_buffer`       | Unsaved staged data          |
-| `storage_usage`      | Disk usage %                 |
-| `orphaned_artifacts` | Leftover `.tmp` files        |
-| `shards`             | Number of active JSON chunks |
+Connect these to your UI to keep users informed:
+
+* `on_status(msg)`: General activity logs.
+* `on_sync()`: Triggered when the debounce timer successfully writes to disk.
+* `on_fault(err)`: Triggered on critical IO or Lock errors.
 
 ---
 
-# 🔔 Callbacks (Optional UI Integration)
+# 🗑 Cleanup & Deletion
 
-## Status Messages
+### `delete_project(confirmed=True)`
 
-```python
-def status(msg):
-    print("STATUS:", msg)
+This is the most "Nuclear" option. It:
 
-engine.on_status = status
-```
-
----
-
-## Sync Complete Callback
-
-```python
-def on_sync():
-    print("Disk sync complete")
-
-engine.on_sync = on_sync
-```
-
----
-
-## Error Handling Callback
-
-```python
-def on_fault(error_message):
-    print("ERROR:", error_message)
-
-engine.on_fault = on_fault
-```
+1. Calls `detach()` to stop all timers and release the lock.
+2. Recursively deletes the entire project folder from the root.
+3. **Critical:** Your app should set `self.engine = None` after this call.
 
 ---
 
 # 🧠 Best Practices
 
-✔ Separate logical domains into different chunks
-✔ Use meaningful chunk names
-✔ Always call `detach()`
-✔ Use checkpoints before risky updates
-✔ Monitor health report periodically
-✔ Avoid storing non-serializable objects
-
----
-
-# ⚠ Common Mistakes
-
-| Mistake                               | Problem                  |
-| ------------------------------------- | ------------------------ |
-| Not detaching                         | Lock remains active      |
-| Using same project in 2 processes     | Lock conflict            |
-| Editing JSON manually during runtime  | Possible corruption      |
-| Calling `force_sync()` too frequently | Performance impact       |
-| Ignoring health report                | Disk issues go unnoticed |
-
----
-
-# 🏗 Example Application Layout
-
-```python
-engine = SafeChunkEngine("crm_system")
-
-engine.stage_update(users_data, "users")
-engine.stage_update(settings_data, "settings")
-engine.stage_update(logs_data, "logs")
-
-engine.force_sync()
-engine.create_checkpoint("daily_backup")
-
-engine.detach()
-```
-
-Result:
-
-```
-crm_system/
-    chunks/
-        users.json
-        settings.json
-        logs.json
-    chunks_bak/
-        users.bak
-        settings.bak
-        logs.bak
-    checkpoints/
-        checkpoint_daily_backup_*.zip
-```
-
----
-
-# 📌 When To Use SafeChunkEngine
-
-### Good For
-
-* Desktop apps
-* Lightweight local storage
-* Crash-resistant JSON persistence
-* Single-writer applications
-* Structured file-based storage
-
-### Not Ideal For
-
-* High-concurrency distributed systems
-* Complex relational queries
-* Multi-node environments
-* Large-scale database workloads
-
----
-
-# 🏁 Summary
-
-SafeChunkEngine provides:
-
-* Atomic writes
-* Backup rotation
-* Self-healing recovery
-* Lock protection
-* Debounced persistence
-* Full project checkpointing
-* Clean folder separation (`chunks/` & `chunks_bak/`)
-
-It delivers database-like safety while staying fully file-based and lightweight.
+1. **Centralize Roots:** Keep all projects in a dedicated `user_projects` folder.
+2. **Graceful Exit:** Always put `engine.detach()` in your GUI's `closeEvent`.
+3. **Sharding:** Don't put everything in one chunk. Split data into `profile`, `settings`, and `project_data` chunks for faster performance.
